@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phần Mềm Đánh Giá Thể Lực HSSV - QĐ 53/2008/QĐ-BGDĐT</title>
+    <title>Phần Mềm Đánh Giá Thể Lực HSSV</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Fonts: Inter -->
@@ -808,12 +808,19 @@
 
                     <div class="bg-slate-50 rounded-xl p-4 border border-slate-200 text-xs text-slate-700 space-y-2 leading-relaxed">
                         <div class="font-extrabold text-slate-900 uppercase flex items-center gap-1.5">
-                            <i class="fa-brands fa-github text-base"></i> Hướng dẫn 4 bước đưa lên GitHub hoạt động 100%:
+                            <i class="fa-brands fa-github text-base"></i> Hướng dẫn mở quyền Rules trên Firebase (Realtime DB & Firestore):
                         </div>
                         <ol class="list-decimal list-inside space-y-1.5">
-                            <li>Vào <a href="https://console.firebase.google.com/" target="_blank" class="text-primary-700 font-bold underline">Firebase Console</a> → Tạo Project mới → Thêm ứng dụng Web (<code class="font-mono">&lt;/&gt;</code>) và copy đoạn <code class="font-mono font-bold">firebaseConfig</code>.</li>
-                            <li>Trong Firebase Console, vào mục <strong>Authentication → Sign-in method</strong> → Bật <strong>Anonymous (Ẩn danh)</strong>.</li>
-                            <li>Vào mục <strong>Firestore Database</strong> → Bấm <strong>Create database</strong> → Mở tab <strong>Rules</strong> và đặt quyền cho phép đọc/ghi:
+                            <li>Vào <a href="https://console.firebase.google.com/" target="_blank" class="text-primary-700 font-bold underline">Firebase Console</a> (Project <strong>tkd-mythuan</strong>).</li>
+                            <li><strong>Nếu dùng Realtime Database</strong> (Khuyên dùng vì siêu nhanh): Vào <strong>Realtime Database → Rules</strong>, dán cấu hình sau rồi bấm <strong>Publish</strong>:
+                                <pre class="mt-1 p-2 rounded bg-slate-900 text-emerald-400 font-mono text-[11px] overflow-x-auto">{
+  "rules": {
+    ".read": true,
+    ".write": true
+  }
+}</pre>
+                            </li>
+                            <li><strong>Nếu dùng Firestore Database</strong>: Vào <strong>Firestore Database → Rules</strong>, dán cấu hình sau rồi bấm <strong>Publish</strong>:
                                 <pre class="mt-1 p-2 rounded bg-slate-900 text-emerald-400 font-mono text-[11px] overflow-x-auto">rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -823,7 +830,7 @@ service cloud.firestore {
   }
 }</pre>
                             </li>
-                            <li>Dán <code class="font-mono font-bold">firebaseConfig</code> vào ô bên trái → Bấm <strong>"Tải File index.html (Đã gắn Firebase)"</strong> rồi upload file <code class="font-mono font-bold">index.html</code> đó lên kho lưu trữ GitHub Pages của bạn.</li>
+                            <li>Bấm <strong>"Lưu & Kết Nối Thử Ngay"</strong> để kiểm tra đồng bộ hoặc tải file <code class="font-mono font-bold">index.html</code> đưa lên GitHub Pages.</li>
                         </ol>
                     </div>
                 </div>
@@ -1037,26 +1044,42 @@ service cloud.firestore {
         import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc, getDocs, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getDatabase, ref, get, set, remove } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+        import { getDatabase, ref, get, set, remove, onValue } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
 
         let db = null;
         let rtdb = null;
+        let rtdbBaseUrl = '';
         let auth = null;
+        let realtimeListenerAttached = false;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'pft-student-eval-app';
 
+        // Hàm giới hạn thời gian chờ (Timeout) giúp Firestore không bao giờ treo khi Project chỉ bật Realtime Database
+        function withTimeout(promise, ms = 2500) {
+            return Promise.race([
+                promise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('CLOUD_TIMEOUT')), ms))
+            ]);
+        }
+
         function resolveActiveFirebaseConfig() {
-            if (window.GITHUB_FIREBASE_CONFIG && window.GITHUB_FIREBASE_CONFIG.apiKey && window.GITHUB_FIREBASE_CONFIG.projectId) {
-                return window.GITHUB_FIREBASE_CONFIG;
-            }
+            // 1. Ưu tiên cấu hình Admin vừa lưu thử nghiệm trong LocalStorage
             try {
                 const savedCustom = localStorage.getItem('pft_custom_firebase_config_v1');
                 if (savedCustom) {
                     const parsed = JSON.parse(savedCustom);
                     if (parsed && parsed.apiKey && parsed.projectId) {
+                        if (!parsed.databaseURL && window.GITHUB_FIREBASE_CONFIG && window.GITHUB_FIREBASE_CONFIG.projectId === parsed.projectId) {
+                            parsed.databaseURL = window.GITHUB_FIREBASE_CONFIG.databaseURL;
+                        }
                         return parsed;
                     }
                 }
             } catch (e) {}
+            // 2. Cấu hình đã nhúng sẵn trong file cho GitHub Pages
+            if (window.GITHUB_FIREBASE_CONFIG && window.GITHUB_FIREBASE_CONFIG.apiKey && window.GITHUB_FIREBASE_CONFIG.projectId) {
+                return window.GITHUB_FIREBASE_CONFIG;
+            }
+            // 3. Cấu hình mặc định của môi trường Canvas
             try {
                 if (typeof __firebase_config !== 'undefined' && __firebase_config) {
                     return JSON.parse(__firebase_config);
@@ -1065,15 +1088,93 @@ service cloud.firestore {
             return null;
         }
 
-        function updateFirebaseStatusBadge(isConnected, projectId = '') {
+        function resolveRtdbUrl(cfg) {
+            if (!cfg) return '';
+            if (cfg.databaseURL) return String(cfg.databaseURL).replace(/\/+$/, '');
+            if (cfg.projectId === 'tkd-mythuan') {
+                return 'https://tkd-mythuan-default-rtdb.asia-southeast1.firebasedatabase.app';
+            }
+            if (cfg.projectId) {
+                return `https://${cfg.projectId}-default-rtdb.firebaseio.com`;
+            }
+            return '';
+        }
+
+        function updateFirebaseStatusBadge(status, detailText = '') {
             const badge = document.getElementById('firebaseConnectionStatusBadge');
             if (!badge) return;
-            if (isConnected) {
+            if (status === 'connected' || status === true) {
                 badge.className = 'px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-xs border border-emerald-300';
-                badge.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> Đã kết nối Firebase Cloud (${projectId || 'Active'})`;
+                badge.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> Đã đồng bộ Firebase Cloud (${detailText || 'Hoạt động 100%'})`;
+            } else if (status === 'rules_locked') {
+                badge.className = 'px-3 py-1 rounded-full bg-rose-100 text-rose-800 font-extrabold text-xs border border-rose-300';
+                badge.innerHTML = `<i class="fa-solid fa-lock mr-1"></i> Firebase (${detailText}) đang khóa Rules (Cần bật .read/.write = true)`;
             } else {
                 badge.className = 'px-3 py-1 rounded-full bg-amber-100 text-amber-800 font-extrabold text-xs border border-amber-300';
                 badge.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-1"></i> Chưa gắn Firebase riêng (Đang lưu cục bộ)`;
+            }
+        }
+
+        // Gọi trực tiếp REST API của Firebase Realtime Database (Không bao giờ bị chặn bởi Authorized Domains trên GitHub Pages)
+        async function rtdbRestRequest(subPath, method = 'GET', bodyObj = null) {
+            if (!rtdbBaseUrl) throw new Error('NO_RTDB_URL');
+            const cleanPath = String(subPath).replace(/^\/+|\/+$/g, '');
+            let url = `${rtdbBaseUrl}/artifacts/${appId}/public/data/${cleanPath}.json`;
+
+            const doFetch = async (targetUrl) => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 3500);
+                try {
+                    const opts = {
+                        method,
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: controller.signal
+                    };
+                    if (bodyObj !== null && method !== 'GET' && method !== 'DELETE') {
+                        opts.body = JSON.stringify(bodyObj);
+                    }
+                    const res = await fetch(targetUrl, opts);
+                    clearTimeout(timer);
+                    if (!res.ok) {
+                        const errTxt = await res.text().catch(() => '');
+                        throw new Error(`HTTP_${res.status}: ${errTxt}`);
+                    }
+                    return await res.json();
+                } catch (err) {
+                    clearTimeout(timer);
+                    throw err;
+                }
+            };
+
+            try {
+                return await doFetch(url);
+            } catch (firstErr) {
+                if (auth && auth.currentUser) {
+                    try {
+                        const token = await auth.currentUser.getIdToken();
+                        if (token) {
+                            return await doFetch(`${url}?auth=${encodeURIComponent(token)}`);
+                        }
+                    } catch (e2) {}
+                }
+                throw firstErr;
+            }
+        }
+
+        function attachRealtimeAccountsListener() {
+            if (!rtdb || realtimeListenerAttached) return;
+            try {
+                realtimeListenerAttached = true;
+                const accRef = ref(rtdb, `artifacts/${appId}/public/data/accounts`);
+                onValue(accRef, (snapshot) => {
+                    if (snapshot && snapshot.exists() && typeof window.mergeIncomingCloudAccounts === 'function') {
+                        const val = snapshot.val() || {};
+                        const list = Object.values(val).filter(item => item && item.username);
+                        window.mergeIncomingCloudAccounts(list);
+                    }
+                }, () => {});
+            } catch (e) {
+                realtimeListenerAttached = false;
             }
         }
 
@@ -1083,30 +1184,40 @@ service cloud.firestore {
                 if (firebaseConfig) {
                     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
                     auth = getAuth(app);
-                    db = getFirestore(app);
                     try {
-                        rtdb = firebaseConfig.databaseURL ? getDatabase(app, firebaseConfig.databaseURL) : getDatabase(app);
-                    } catch (rtdbErr) {
-                        console.warn('RTDB init warning:', rtdbErr);
+                        db = getFirestore(app);
+                    } catch (fsErr) {}
+
+                    rtdbBaseUrl = resolveRtdbUrl(firebaseConfig);
+                    if (rtdbBaseUrl) {
+                        try {
+                            rtdb = getDatabase(app, rtdbBaseUrl);
+                        } catch (rtdbErr) {
+                            console.warn('RTDB SDK init warning:', rtdbErr);
+                        }
                     }
 
+                    // Đăng nhập ẩn danh có timeout ngắn (800ms) để không làm chậm nếu tên miền github.io chưa thêm vào Authorized Domains
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && !window.GITHUB_FIREBASE_CONFIG) {
-                            await Promise.race([signInWithCustomToken(auth, __initial_auth_token), new Promise(r => setTimeout(r, 1500))]);
+                            await withTimeout(signInWithCustomToken(auth, __initial_auth_token), 800);
                         } else {
-                            await Promise.race([signInAnonymously(auth), new Promise(r => setTimeout(r, 1500))]);
+                            await withTimeout(signInAnonymously(auth), 800);
                         }
                     } catch (authErr) {
-                        console.warn('Anonymous Auth chưa bật hoặc không bắt buộc trên Rules mở:', authErr);
+                        // Bỏ qua lỗi auth/unauthorized-domain trên github.io vì RTDB REST/SDK & Firestore Rules mở không bắt buộc Auth
                     }
 
-                    updateFirebaseStatusBadge(true, firebaseConfig.projectId);
+                    attachRealtimeAccountsListener();
+                    updateFirebaseStatusBadge('connected', firebaseConfig.projectId);
+
+                    // Chạy đồng bộ nền tức thì
                     Promise.allSettled([
-                        window.syncCloudQuotaUsage(),
-                        window.syncCloudAccounts(),
-                        window.syncCloudTeacherEvalLogs(),
-                        window.syncCloudSecurityAlerts(),
-                        window.recordIpAccessLog('Truy cập hệ thống')
+                        window.syncCloudAccounts ? window.syncCloudAccounts() : Promise.resolve(),
+                        window.syncCloudQuotaUsage ? window.syncCloudQuotaUsage() : Promise.resolve(),
+                        window.syncCloudTeacherEvalLogs ? window.syncCloudTeacherEvalLogs() : Promise.resolve(),
+                        window.syncCloudSecurityAlerts ? window.syncCloudSecurityAlerts() : Promise.resolve(),
+                        window.recordIpAccessLog ? window.recordIpAccessLog('Truy cập hệ thống') : Promise.resolve()
                     ]);
                 } else {
                     updateFirebaseStatusBadge(false);
@@ -1118,63 +1229,66 @@ service cloud.firestore {
         };
 
         function isCloudReady() {
-            return Boolean(db || rtdb);
+            return Boolean(rtdbBaseUrl || rtdb || db);
         }
 
+        // Lưu & đồng bộ Cảnh báo an ninh
         window.saveCloudSecurityAlert = async function(alertObj) {
-            if (!isCloudReady()) return;
+            if (!isCloudReady()) return false;
             const docId = `alert_${alertObj.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
             const tasks = [];
-            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'security_alerts', docId), alertObj));
-            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/security_alerts/${docId}`), alertObj));
-            await Promise.allSettled(tasks);
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest(`security_alerts/${docId}`, 'PUT', alertObj));
+            if (rtdb) tasks.push(withTimeout(set(ref(rtdb, `artifacts/${appId}/public/data/security_alerts/${docId}`), alertObj), 2500));
+            if (db) tasks.push(withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'security_alerts', docId), alertObj), 2500));
+            const res = await Promise.allSettled(tasks);
+            return res.some(r => r.status === 'fulfilled');
         };
 
         window.fetchAllCloudSecurityAlerts = async function() {
             if (!isCloudReady()) return null;
             const map = new Map();
+            const collect = (arrOrObj) => {
+                if (!arrOrObj) return;
+                const items = Array.isArray(arrOrObj) ? arrOrObj : Object.values(arrOrObj);
+                items.forEach(v => { if (v && v.id) map.set(v.id, v); });
+            };
             const tasks = [];
-            if (db) {
-                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'security_alerts')).then(snap => {
-                    snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); });
-                }));
-            }
-            if (rtdb) {
-                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/security_alerts`)).then(snap => {
-                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v && v.id) map.set(v.id, v); });
-                }));
-            }
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest('security_alerts', 'GET').then(collect));
+            if (rtdb) tasks.push(withTimeout(get(ref(rtdb, `artifacts/${appId}/public/data/security_alerts`)), 2500).then(s => { if (s.exists()) collect(s.val()); }));
+            if (db) tasks.push(withTimeout(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'security_alerts')), 2000).then(snap => snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); })));
             await Promise.allSettled(tasks);
             return Array.from(map.values());
         };
 
+        // Lưu & đọc lịch sử các lượt bấm Đánh Giá / Xuất file của Giáo viên trên Cloud
         window.saveCloudTeacherEvalLog = async function(evalEntry) {
-            if (!isCloudReady()) return;
+            if (!isCloudReady()) return false;
             const docId = `eval_${evalEntry.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
             const tasks = [];
-            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs', docId), evalEntry));
-            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs/${docId}`), evalEntry));
-            await Promise.allSettled(tasks);
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest(`teacher_eval_logs/${docId}`, 'PUT', evalEntry));
+            if (rtdb) tasks.push(withTimeout(set(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs/${docId}`), evalEntry), 3000));
+            if (db) tasks.push(withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs', docId), evalEntry), 2500));
+            const res = await Promise.allSettled(tasks);
+            return res.some(r => r.status === 'fulfilled');
         };
 
         window.fetchAllCloudTeacherEvalLogs = async function() {
             if (!isCloudReady()) return null;
             const map = new Map();
+            const collect = (arrOrObj) => {
+                if (!arrOrObj) return;
+                const items = Array.isArray(arrOrObj) ? arrOrObj : Object.values(arrOrObj);
+                items.forEach(v => { if (v && v.id) map.set(v.id, v); });
+            };
             const tasks = [];
-            if (db) {
-                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs')).then(snap => {
-                    snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); });
-                }));
-            }
-            if (rtdb) {
-                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs`)).then(snap => {
-                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v && v.id) map.set(v.id, v); });
-                }));
-            }
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest('teacher_eval_logs', 'GET').then(collect));
+            if (rtdb) tasks.push(withTimeout(get(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs`)), 2500).then(s => { if (s.exists()) collect(s.val()); }));
+            if (db) tasks.push(withTimeout(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs')), 2000).then(snap => snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); })));
             await Promise.allSettled(tasks);
             return Array.from(map.values());
         };
 
+        // Đọc TỔNG SỐ LƯỢT đã tạo của IP WiFi + Device Fingerprint
         window.fetchCloudQuota = async function(ipKey, fpKey, dateStr) {
             if (!isCloudReady()) return null;
             try {
@@ -1187,14 +1301,19 @@ service cloud.firestore {
                 let maxUsed = 0;
                 const tasks = [];
                 ids.forEach(id => {
-                    if (db) {
-                        tasks.push(getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id)).then(s => {
-                            if (s && s.exists()) maxUsed = Math.max(maxUsed, s.data().count || 0);
+                    if (rtdbBaseUrl) {
+                        tasks.push(rtdbRestRequest(`rate_limits/${id}`, 'GET').then(v => {
+                            if (v && v.count) maxUsed = Math.max(maxUsed, Number(v.count) || 0);
                         }));
                     }
                     if (rtdb) {
-                        tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`)).then(s => {
+                        tasks.push(withTimeout(get(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`)), 2000).then(s => {
                             if (s && s.exists()) maxUsed = Math.max(maxUsed, (s.val() && s.val().count) || 0);
+                        }));
+                    }
+                    if (db) {
+                        tasks.push(withTimeout(getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id)), 2000).then(s => {
+                            if (s && s.exists()) maxUsed = Math.max(maxUsed, s.data().count || 0);
                         }));
                     }
                 });
@@ -1205,6 +1324,7 @@ service cloud.firestore {
             }
         };
 
+        // Lưu tăng lượt sử dụng lên Cloud song song không chặn giao diện
         window.saveCloudQuota = async function(ipKey, fpKey, dateStr, newCount, ipRaw) {
             if (!isCloudReady()) return;
             const payload = {
@@ -1222,84 +1342,135 @@ service cloud.firestore {
             ];
             const tasks = [];
             ids.forEach(id => {
-                if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id), payload));
-                if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`), payload));
+                if (rtdbBaseUrl) tasks.push(rtdbRestRequest(`rate_limits/${id}`, 'PUT', payload));
+                if (rtdb) tasks.push(withTimeout(set(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`), payload), 2500));
+                if (db) tasks.push(withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id), payload), 2500));
             });
             await Promise.allSettled(tasks);
         };
 
+        // Ghi nhận lịch sử IP đã đăng nhập / sử dụng
         window.saveCloudIpLog = async function(logEntry) {
             if (!isCloudReady()) return;
             const docId = `iplog_${logEntry.ipKey}_${logEntry.fingerprint}`.replace(/[^a-zA-Z0-9_-]/g, '_');
             const tasks = [];
-            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'ip_logs', docId), logEntry));
-            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/ip_logs/${docId}`), logEntry));
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest(`ip_logs/${docId}`, 'PUT', logEntry));
+            if (rtdb) tasks.push(withTimeout(set(ref(rtdb, `artifacts/${appId}/public/data/ip_logs/${docId}`), logEntry), 2500));
+            if (db) tasks.push(withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'ip_logs', docId), logEntry), 2500));
             await Promise.allSettled(tasks);
         };
 
         window.fetchAllCloudIpLogs = async function() {
             if (!isCloudReady()) return null;
             const map = new Map();
+            const collect = (arrOrObj) => {
+                if (!arrOrObj) return;
+                const items = Array.isArray(arrOrObj) ? arrOrObj : Object.values(arrOrObj);
+                items.forEach(v => { if (v && v.ipKey) map.set(`${v.ipKey}_${v.fingerprint}`, v); });
+            };
             const tasks = [];
-            if (db) {
-                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'ip_logs')).then(snap => {
-                    snap.forEach(d => { const v = d.data(); if (v) map.set(`${v.ipKey}_${v.fingerprint}`, v); });
-                }));
-            }
-            if (rtdb) {
-                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/ip_logs`)).then(snap => {
-                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v) map.set(`${v.ipKey}_${v.fingerprint}`, v); });
-                }));
-            }
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest('ip_logs', 'GET').then(collect));
+            if (rtdb) tasks.push(withTimeout(get(ref(rtdb, `artifacts/${appId}/public/data/ip_logs`)), 2500).then(s => { if (s.exists()) collect(s.val()); }));
+            if (db) tasks.push(withTimeout(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'ip_logs')), 2000).then(snap => snap.forEach(d => { const v = d.data(); if (v && v.ipKey) map.set(`${v.ipKey}_${v.fingerprint}`, v); })));
             await Promise.allSettled(tasks);
             return Array.from(map.values());
         };
 
+        // Đồng bộ danh sách tài khoản được cấp quyền (Admin & Giáo viên) trên Cloud (Trả kết quả ngay khi 1 trong các kênh RTDB / Firestore thành công)
         window.saveCloudAccountItem = async function(accObj) {
             if (!isCloudReady()) return false;
-            const cleanUser = String(accObj.username || '').trim().toLowerCase();
-            const docId = `acc_${cleanUser}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-            const tasks = [];
-            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId), accObj));
-            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`), accObj));
-            const res = await Promise.allSettled(tasks);
-            return res.some(r => r.status === 'fulfilled');
+            const cleanUsername = String(accObj.username || '').trim().toLowerCase();
+            const docId = `acc_${cleanUsername}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const payload = { ...accObj, updatedAt: accObj.updatedAt || Date.now() };
+
+            const fastTasks = [];
+            if (rtdbBaseUrl) fastTasks.push(rtdbRestRequest(`accounts/${docId}`, 'PUT', payload));
+            if (rtdb) fastTasks.push(withTimeout(set(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`), payload), 2500));
+            if (db) fastTasks.push(withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId), payload), 2000));
+
+            try {
+                // Trả về true NGAY LẬP TỨC khi kênh nhanh nhất (RTDB REST hoặc SDK) lưu xong, không chờ kênh bị treo
+                await Promise.any(fastTasks);
+                updateFirebaseStatusBadge('connected', resolveActiveFirebaseConfig()?.projectId || 'Active');
+                return true;
+            } catch (aggregateErr) {
+                console.warn('All cloud account save channels failed:', aggregateErr);
+                updateFirebaseStatusBadge('rules_locked', resolveActiveFirebaseConfig()?.projectId || 'Firebase');
+                return false;
+            }
         };
 
         window.deleteCloudAccountItem = async function(username) {
             if (!isCloudReady()) return false;
-            const cleanUser = String(username || '').trim().toLowerCase();
-            const docId = `acc_${cleanUser}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const cleanUsername = String(username || '').trim().toLowerCase();
+            const docId = `acc_${cleanUsername}`.replace(/[^a-zA-Z0-9_-]/g, '_');
             const tasks = [];
-            if (db) tasks.push(deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId)));
-            if (rtdb) tasks.push(remove(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`)));
-            const res = await Promise.allSettled(tasks);
-            return res.some(r => r.status === 'fulfilled');
+            if (rtdbBaseUrl) tasks.push(rtdbRestRequest(`accounts/${docId}`, 'DELETE'));
+            if (rtdb) tasks.push(withTimeout(remove(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`)), 2500));
+            if (db) tasks.push(withTimeout(deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId)), 2000));
+            try {
+                await Promise.any(tasks);
+                return true;
+            } catch (e) {
+                return false;
+            }
         };
 
         window.fetchAllCloudAccounts = async function() {
             if (!isCloudReady()) return null;
             const map = new Map();
-            const tasks = [];
-            if (db) {
-                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')).then(snap => {
-                    snap.forEach(d => {
-                        const acc = d.data();
-                        if (acc && acc.username) map.set(String(acc.username).trim().toLowerCase(), acc);
-                    });
-                }));
+            let anySuccess = false;
+
+            const mergeItem = (acc) => {
+                if (!acc || !acc.username) return;
+                const key = String(acc.username).trim().toLowerCase();
+                const existing = map.get(key);
+                if (!existing || (acc.updatedAt || 0) >= (existing.updatedAt || 0)) {
+                    map.set(key, acc);
+                }
+            };
+
+            const collectObjOrArr = (data) => {
+                anySuccess = true;
+                if (!data) return;
+                const arr = Array.isArray(data) ? data : Object.values(data);
+                arr.forEach(mergeItem);
+            };
+
+            // Ưu tiên lấy nhanh từ Realtime Database REST & SDK trước
+            const primaryTasks = [];
+            if (rtdbBaseUrl) {
+                primaryTasks.push(rtdbRestRequest('accounts', 'GET').then(collectObjOrArr));
             }
             if (rtdb) {
-                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/accounts`)).then(snap => {
-                    if (snap.exists()) {
-                        Object.values(snap.val() || {}).forEach(acc => {
-                            if (acc && acc.username) map.set(String(acc.username).trim().toLowerCase(), acc);
-                        });
-                    }
+                primaryTasks.push(withTimeout(get(ref(rtdb, `artifacts/${appId}/public/data/accounts`)), 2000).then(s => {
+                    anySuccess = true;
+                    if (s && s.exists()) collectObjOrArr(s.val());
                 }));
             }
-            const res = await Promise.allSettled(tasks);
-            if (res.every(r => r.status === 'rejected')) return null;
+
+            // Chạy Firestore song song nhưng chỉ đợi tối đa 1.5s để không làm chậm nếu Project chỉ dùng Realtime Database
+            const fsTask = db
+                ? withTimeout(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')), 1500).then(snap => {
+                    anySuccess = true;
+                    snap.forEach(d => mergeItem(d.data()));
+                }).catch(() => {})
+                : Promise.resolve();
+
+            if (primaryTasks.length > 0) {
+                try {
+                    await Promise.any(primaryTasks);
+                    // Cho phép kênh còn lại thêm tối đa 150ms để gộp nốt dữ liệu nếu có
+                    await Promise.race([Promise.allSettled([...primaryTasks, fsTask]), new Promise(r => setTimeout(r, 150))]);
+                } catch (e) {
+                    await fsTask;
+                }
+            } else {
+                await fsTask;
+            }
+
+            if (!anySuccess) return null;
+            updateFirebaseStatusBadge('connected', resolveActiveFirebaseConfig()?.projectId || 'Active');
             return Array.from(map.values());
         };
 
@@ -1334,22 +1505,31 @@ service cloud.firestore {
                 localStorage.setItem(key, valueStr);
                 return true;
             } catch (err) {
-                if (key === 'pft_teacher_eval_logs_v1' && Array.isArray(teacherEvalLogsList)) {
-                    try {
-                        // Giữ nguyên dữ liệu trên Firebase Cloud, còn ở trình duyệt cục bộ chỉ giữ bản lưu file của 5 lượt gần nhất
+                try {
+                    if (Array.isArray(teacherEvalLogsList) && teacherEvalLogsList.length > 0) {
+                        // Giữ nguyên dữ liệu trên Firebase Cloud, còn ở trình duyệt cục bộ chỉ giữ bản lưu file của 3 lượt gần nhất
                         const slimList = teacherEvalLogsList.map((item, idx) => {
-                            if (idx >= 5 && item.savedRowsJson) {
+                            if (idx >= 3 && item.savedRowsJson) {
                                 return { ...item, savedRowsJson: '' };
                             }
                             return item;
                         });
-                        localStorage.setItem(key, JSON.stringify(slimList));
-                        return true;
-                    } catch (e2) {
-                        console.warn('Bộ nhớ trình duyệt đã đầy, ưu tiên lưu trên Firebase Cloud:', e2);
+                        localStorage.setItem('pft_teacher_eval_logs_v1', JSON.stringify(slimList));
                     }
+                    localStorage.setItem(key, valueStr);
+                    return true;
+                } catch (e2) {
+                    console.warn('Bộ nhớ trình duyệt đã đầy, ưu tiên lưu trên Firebase Cloud:', e2);
                 }
                 return false;
+            }
+        }
+
+        function getDeletedAccountsMap() {
+            try {
+                return JSON.parse(localStorage.getItem('pft_deleted_accounts_v1') || '{}') || {};
+            } catch (e) {
+                return {};
             }
         }
 
@@ -1416,7 +1596,7 @@ service cloud.firestore {
                 resolved: false
             };
             securityAlertsList.unshift(alertObj);
-            localStorage.setItem('pft_security_alerts_v1', JSON.stringify(securityAlertsList));
+            safeSetLocalStorage('pft_security_alerts_v1', JSON.stringify(securityAlertsList));
             if (typeof window.saveCloudSecurityAlert === 'function') {
                 await window.saveCloudSecurityAlert(alertObj);
             }
@@ -1431,7 +1611,7 @@ service cloud.firestore {
                     securityAlertsList.forEach(a => map.set(a.id, a));
                     cloudAlerts.forEach(a => map.set(a.id, a));
                     securityAlertsList = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-                    localStorage.setItem('pft_security_alerts_v1', JSON.stringify(securityAlertsList));
+                    safeSetLocalStorage('pft_security_alerts_v1', JSON.stringify(securityAlertsList));
                     renderAdminSecurityAlertsBanner();
                 }
             }
@@ -1668,7 +1848,7 @@ service cloud.firestore {
                 ipLogsList.unshift(entry);
             }
 
-            localStorage.setItem('pft_ip_logs_v1', JSON.stringify(ipLogsList));
+            safeSetLocalStorage('pft_ip_logs_v1', JSON.stringify(ipLogsList));
             if (typeof window.saveCloudIpLog === 'function' && clientIpKey !== 'local_ip') {
                 await window.saveCloudIpLog(entry);
             }
@@ -1738,21 +1918,62 @@ service cloud.firestore {
             }
         };
 
+        window.mergeIncomingCloudAccounts = function(cloudList) {
+            if (!Array.isArray(cloudList)) return;
+            const deletedMap = getDeletedAccountsMap();
+            const map = new Map();
+
+            createDefaultAccounts().forEach(acc => {
+                const k = String(acc.username).trim().toLowerCase();
+                if (!deletedMap[k] || acc.isProtected) map.set(k, acc);
+            });
+
+            (accountsList || []).forEach(acc => {
+                if (!acc || !acc.username) return;
+                const k = String(acc.username).trim().toLowerCase();
+                if (deletedMap[k] && !acc.isProtected) return;
+                map.set(k, acc);
+            });
+
+            cloudList.forEach(acc => {
+                if (!acc || !acc.username) return;
+                const k = String(acc.username).trim().toLowerCase();
+                if (deletedMap[k] && (!acc.updatedAt || acc.updatedAt <= deletedMap[k])) return;
+                const existing = map.get(k);
+                if (!existing || (acc.updatedAt || 0) >= (existing.updatedAt || 0)) {
+                    map.set(k, acc);
+                }
+            });
+
+            accountsList = Array.from(map.values());
+            safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
+            renderAccountsTable();
+        };
+
         window.syncCloudAccounts = async function() {
             if (typeof window.fetchAllCloudAccounts === 'function') {
                 const cloudList = await window.fetchAllCloudAccounts();
-                if (cloudList && cloudList.length > 0) {
-                    const map = new Map();
-                    // Chỉ giữ cố định các tài khoản Admin gốc được bảo vệ, còn lại lấy chuẩn theo Cloud để không làm sống lại tài khoản đã xóa
-                    createDefaultAccounts().filter(a => a.isProtected).forEach(acc => map.set(acc.username.toLowerCase(), acc));
-                    cloudList.forEach(acc => map.set(acc.username.toLowerCase(), acc));
-                    accountsList = Array.from(map.values());
-                    safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
-                    renderAccountsTable();
+                if (cloudList && Array.isArray(cloudList)) {
+                    const deletedMap = getDeletedAccountsMap();
+                    const cloudKeys = new Set(cloudList.map(c => String(c?.username || '').trim().toLowerCase()));
+                    const localUnsynced = (accountsList || []).filter(acc => {
+                        if (!acc || !acc.username || acc.isProtected) return false;
+                        const k = String(acc.username).trim().toLowerCase();
+                        return !deletedMap[k] && !cloudKeys.has(k);
+                    });
+
+                    window.mergeIncomingCloudAccounts(cloudList);
+
+                    // Tự động đẩy các tài khoản đã tạo trên máy nhưng trước đó chưa lên được Cloud
+                    if (localUnsynced.length > 0 && typeof window.saveCloudAccountItem === 'function') {
+                        for (const unsyncedAcc of localUnsynced) {
+                            window.saveCloudAccountItem(unsyncedAcc).catch(() => {});
+                        }
+                    }
 
                     // Nếu tài khoản Giáo viên đang đăng nhập vừa bị khóa trên Cloud -> tự động đăng xuất ngay
                     if (isUserLoggedIn && loggedInUserRole !== 'admin') {
-                        const activeAcc = accountsList.find(a => a.username.toLowerCase() === String(loggedInAccountUsername).toLowerCase());
+                        const activeAcc = accountsList.find(a => String(a.username || '').trim().toLowerCase() === String(loggedInAccountUsername || '').trim().toLowerCase());
                         if (!activeAcc || activeAcc.isLocked) {
                             await handleUserLogout();
                             showToast('Tài khoản của bạn đã bị khóa hoặc thu hồi quyền bởi Admin!', 'error');
@@ -1939,21 +2160,22 @@ service cloud.firestore {
                 return;
             }
 
-            // 1. Tìm ngay lập tức trong bộ nhớ (0ms) để không phải chờ mạng
-            let foundAcc = accountsList.find(
-                acc => acc.username.toLowerCase() === usernameInput.toLowerCase() && acc.password === passwordInput
+            const findAccountInMemory = () => accountsList.find(
+                acc => String(acc.username || '').trim().toLowerCase() === usernameInput.toLowerCase() &&
+                       String(acc.password || '').trim() === passwordInput
             );
 
-            // 2. Chỉ khi chưa thấy trong bộ nhớ cục bộ mới hỏi Cloud (giới hạn tối đa 1.2 giây để không bao giờ bị treo)
+            // 1. Tìm ngay lập tức trong bộ nhớ (0ms) để không phải chờ mạng
+            let foundAcc = findAccountInMemory();
+
+            // 2. Nếu chưa thấy (VD: Giáo viên đăng nhập trên máy mới từ GitHub Pages), đồng bộ từ Firebase Cloud (tối đa 4.5 giây)
             if (!foundAcc && typeof window.syncCloudAccounts === 'function') {
                 try {
                     await Promise.race([
                         window.syncCloudAccounts(),
-                        new Promise(resolve => setTimeout(resolve, 1200))
+                        new Promise(resolve => setTimeout(resolve, 4500))
                     ]);
-                    foundAcc = accountsList.find(
-                        acc => acc.username.toLowerCase() === usernameInput.toLowerCase() && acc.password === passwordInput
-                    );
+                    foundAcc = findAccountInMemory();
                 } catch (e) {}
             }
 
@@ -2260,7 +2482,7 @@ service cloud.firestore {
                     accountsList = JSON.parse(savedAccounts);
                 } else {
                     accountsList = createDefaultAccounts();
-                    localStorage.setItem('pft_accounts_v1', JSON.stringify(accountsList));
+                    safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
                 }
 
                 const savedIpLogs = localStorage.getItem('pft_ip_logs_v1');
@@ -4132,11 +4354,12 @@ service cloud.firestore {
             acc.lockReason = '';
             acc.knownIps = [];
             acc.classSizeHistory = {};
+            acc.updatedAt = Date.now();
             safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
+            renderAccountsTable();
             if (typeof window.saveCloudAccountItem === 'function') {
                 await window.saveCloudAccountItem(acc);
             }
-            renderAccountsTable();
             showToast(`Đã mở khóa, làm mới danh sách IP và lịch sử sĩ số lớp cho tài khoản "${acc.username}"!`, 'success');
         }
 
@@ -4152,7 +4375,14 @@ service cloud.firestore {
                 return;
             }
 
-            const existingIdx = accountsList.findIndex(a => a.username.toLowerCase() === username.toLowerCase());
+            const cleanKey = username.toLowerCase();
+            const deletedMap = getDeletedAccountsMap();
+            if (deletedMap[cleanKey]) {
+                delete deletedMap[cleanKey];
+                safeSetLocalStorage('pft_deleted_accounts_v1', JSON.stringify(deletedMap));
+            }
+
+            const existingIdx = accountsList.findIndex(a => String(a.username || '').trim().toLowerCase() === cleanKey);
             const newAccObj = {
                 username,
                 password,
@@ -4162,30 +4392,38 @@ service cloud.firestore {
                 knownIps: [],
                 isLocked: false,
                 lockReason: '',
-                classSizeHistory: {}
+                classSizeHistory: {},
+                updatedAt: Date.now()
             };
 
-            if (existingIdx >= 0) {
-                newAccObj.isProtected = accountsList[existingIdx].isProtected;
+            const isUpdate = existingIdx >= 0;
+            if (isUpdate) {
+                newAccObj.isProtected = Boolean(accountsList[existingIdx].isProtected);
                 newAccObj.knownIps = accountsList[existingIdx].knownIps || [];
                 newAccObj.isLocked = false;
                 newAccObj.classSizeHistory = accountsList[existingIdx].classSizeHistory || {};
                 accountsList[existingIdx] = newAccObj;
-                showToast(`Đã cập nhật thông tin & quyền cho tài khoản "${username}"!`, 'success');
             } else {
                 accountsList.push(newAccObj);
-                showToast(`Đã tạo và cấp quyền ${role === 'admin' ? 'Admin' : 'Giáo viên'} cho "${username}"!`, 'success');
             }
 
-            localStorage.setItem('pft_accounts_v1', JSON.stringify(accountsList));
-            if (typeof window.saveCloudAccountItem === 'function') {
-                await window.saveCloudAccountItem(newAccObj);
-            }
+            safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
+            renderAccountsTable();
 
             document.getElementById('newAccUsername').value = '';
             document.getElementById('newAccPassword').value = '';
             document.getElementById('newAccFullName').value = '';
-            renderAccountsTable();
+
+            let cloudOk = false;
+            if (typeof window.saveCloudAccountItem === 'function') {
+                cloudOk = await window.saveCloudAccountItem(newAccObj);
+            }
+
+            if (cloudOk) {
+                showToast(`Đã lưu & đồng bộ lên Firebase Cloud tài khoản "${username}" (${role === 'admin' ? 'Admin' : 'Giáo viên'})!`, 'success');
+            } else {
+                showToast(`Đã lưu tài khoản "${username}" trên máy này, nhưng Firebase đang chặn quyền ghi (Hãy mở Rules .read/.write = true trên Firebase Console)!`, 'warning');
+            }
         }
 
         async function toggleAccountRole(idx) {
@@ -4193,11 +4431,12 @@ service cloud.firestore {
             const acc = accountsList[idx];
             if (!acc) return;
             acc.role = acc.role === 'admin' ? 'teacher' : 'admin';
+            acc.updatedAt = Date.now();
             safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
+            renderAccountsTable();
             if (typeof window.saveCloudAccountItem === 'function') {
                 await window.saveCloudAccountItem(acc);
             }
-            renderAccountsTable();
             showToast(`Đã chuyển quyền của "${acc.username}" sang ${acc.role === 'admin' ? 'Admin' : 'Giáo viên'}!`, 'info');
         }
 
@@ -4205,20 +4444,24 @@ service cloud.firestore {
             if (!requireAdminUi('xóa tài khoản')) return;
             const acc = accountsList[idx];
             if (!acc || acc.isProtected) return;
+            const cleanKey = String(acc.username || '').trim().toLowerCase();
+            const deletedMap = getDeletedAccountsMap();
+            deletedMap[cleanKey] = Date.now();
+            safeSetLocalStorage('pft_deleted_accounts_v1', JSON.stringify(deletedMap));
+
             accountsList.splice(idx, 1);
             safeSetLocalStorage('pft_accounts_v1', JSON.stringify(accountsList));
+            renderAccountsTable();
             if (typeof window.deleteCloudAccountItem === 'function') {
                 await window.deleteCloudAccountItem(acc.username);
             }
-            renderAccountsTable();
             showToast(`Đã thu hồi quyền và xóa tài khoản "${acc.username}".`, 'info');
         }
 
-        // Hàm hỗ trợ đọc chuỗi firebaseConfig (chấp nhận cả JSON lẫn đoạn code copy trực tiếp từ Firebase Console)
+        // Hàm đọc chuỗi firebaseConfig chuẩn xác (Không làm hỏng dấu hai chấm trong https:// hoặc appId)
         function parseFirebaseConfigInput(rawText) {
             if (!rawText) return null;
             let cleaned = rawText.trim();
-            // Nếu người dùng copy cả cụm "const firebaseConfig = { ... };"
             const objMatch = cleaned.match(/\{[\s\S]*\}/);
             if (objMatch) {
                 cleaned = objMatch[0];
@@ -4227,12 +4470,16 @@ service cloud.firestore {
                 return JSON.parse(cleaned);
             } catch (e) {
                 try {
-                    // Chuyển đổi các key không có dấu ngoặc kép của JS Object sang JSON hợp lệ
-                    const jsonLike = cleaned
-                        .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?\s*:/g, '"$2":')
-                        .replace(/'/g, '"')
-                        .replace(/,\s*\}/g, '}');
-                    return JSON.parse(jsonLike);
+                    const result = {};
+                    const pairRegex = /(['"])?([a-zA-Z0-9_]+)\1\s*:\s*(['"])([^'"]*)\3/g;
+                    let match;
+                    while ((match = pairRegex.exec(cleaned)) !== null) {
+                        result[match[2]] = match[4];
+                    }
+                    if (result.apiKey && result.projectId) {
+                        return result;
+                    }
+                    return null;
                 } catch (err) {
                     return null;
                 }
@@ -4247,6 +4494,9 @@ service cloud.firestore {
                 showToast('Đoạn mã firebaseConfig chưa hợp lệ! Cần có tối thiểu apiKey và projectId.', 'error');
                 return;
             }
+            if (!parsed.databaseURL && parsed.projectId === 'tkd-mythuan') {
+                parsed.databaseURL = 'https://tkd-mythuan-default-rtdb.asia-southeast1.firebasedatabase.app';
+            }
             const formatted = JSON.stringify(parsed, null, 2);
             document.getElementById('customFirebaseConfigInput').value = formatted;
             safeSetLocalStorage('pft_custom_firebase_config_v1', formatted);
@@ -4255,29 +4505,36 @@ service cloud.firestore {
             if (typeof window.initFirebaseRateLimiter === 'function') {
                 await window.initFirebaseRateLimiter();
             }
-            // Đẩy toàn bộ danh sách tài khoản hiện tại lên Firebase mới của bạn
+            let syncedCount = 0;
             if (typeof window.saveCloudAccountItem === 'function') {
                 for (const acc of accountsList) {
-                    await window.saveCloudAccountItem(acc);
+                    const ok = await window.saveCloudAccountItem(acc);
+                    if (ok) syncedCount++;
                 }
             }
-            showToast(`Đã kết nối thành công tới Firebase Project "${parsed.projectId}" và đồng bộ danh sách tài khoản!`, 'success');
+            if (syncedCount > 0) {
+                showToast(`Đã kết nối thành công tới Firebase "${parsed.projectId}" và đồng bộ ${syncedCount} tài khoản lên Cloud!`, 'success');
+            } else {
+                showToast(`Đã lưu cấu hình "${parsed.projectId}", nhưng chưa ghi được dữ liệu (Hãy kiểm tra mở Rules .read/.write = true trên Firebase Console)!`, 'warning');
+            }
         }
 
         function exportReadyForGitHubHtml() {
             if (!requireAdminUi('xuất cấu hình Firebase cho GitHub')) return;
             const rawText = document.getElementById('customFirebaseConfigInput')?.value || '';
-            const parsed = parseFirebaseConfigInput(rawText);
+            const parsed = parseFirebaseConfigInput(rawText) || window.GITHUB_FIREBASE_CONFIG;
             if (!parsed || !parsed.apiKey || !parsed.projectId) {
                 showToast('Vui lòng dán đoạn mã firebaseConfig hợp lệ vào ô trước khi tải file index.html cho GitHub!', 'warning');
                 return;
             }
+            if (!parsed.databaseURL && parsed.projectId === 'tkd-mythuan') {
+                parsed.databaseURL = 'https://tkd-mythuan-default-rtdb.asia-southeast1.firebasedatabase.app';
+            }
 
-            // Tạo bản sao DOM sạch để không làm lộ dữ liệu phiên Admin (IP, lịch sử trường lớp, trạng thái tab Cấp quyền) ra file tĩnh
+            // Tạo bản sao DOM sạch để không làm lộ dữ liệu phiên Admin ra file tĩnh
             const cleanDoc = document.documentElement.cloneNode(true);
             cleanDoc.removeAttribute('style');
 
-            // 1. Đưa các vùng bảng động về rỗng sạch sẽ
             const dynamicClearIds = [
                 'evalTableBody',
                 'ageSelectorTabs',
@@ -4295,7 +4552,6 @@ service cloud.firestore {
                 if (el) el.innerHTML = '';
             });
 
-            // 2. Đặt lại trạng thái hiển thị mặc định cho Khách (Chỉ hiện tab Đánh giá, ẩn thanh tab Admin và ẩn nút Chào Admin)
             const navTabs = cleanDoc.querySelector('#headerNavTabsContainer');
             if (navTabs) {
                 navTabs.classList.add('hidden');
