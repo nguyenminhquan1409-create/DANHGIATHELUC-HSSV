@@ -1037,17 +1037,17 @@ service cloud.firestore {
         import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc, getDocs, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getDatabase, ref, get, set, remove } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
 
         let db = null;
+        let rtdb = null;
         let auth = null;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'pft-student-eval-app';
 
         function resolveActiveFirebaseConfig() {
-            // 1. Ưu tiên cấu hình đã nhúng sẵn trong file cho GitHub Pages
             if (window.GITHUB_FIREBASE_CONFIG && window.GITHUB_FIREBASE_CONFIG.apiKey && window.GITHUB_FIREBASE_CONFIG.projectId) {
                 return window.GITHUB_FIREBASE_CONFIG;
             }
-            // 2. Cấu hình Admin đã lưu thử nghiệm trong LocalStorage
             try {
                 const savedCustom = localStorage.getItem('pft_custom_firebase_config_v1');
                 if (savedCustom) {
@@ -1057,7 +1057,6 @@ service cloud.firestore {
                     }
                 }
             } catch (e) {}
-            // 3. Cấu hình mặc định của môi trường Canvas
             try {
                 if (typeof __firebase_config !== 'undefined' && __firebase_config) {
                     return JSON.parse(__firebase_config);
@@ -1077,24 +1076,31 @@ service cloud.firestore {
                 badge.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-1"></i> Chưa gắn Firebase riêng (Đang lưu cục bộ)`;
             }
         }
-                    window.initFirebaseRateLimiter = async function() {
+
+        window.initFirebaseRateLimiter = async function() {
             try {
                 const firebaseConfig = resolveActiveFirebaseConfig();
                 if (firebaseConfig) {
                     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
                     auth = getAuth(app);
                     db = getFirestore(app);
+                    try {
+                        rtdb = firebaseConfig.databaseURL ? getDatabase(app, firebaseConfig.databaseURL) : getDatabase(app);
+                    } catch (rtdbErr) {
+                        console.warn('RTDB init warning:', rtdbErr);
+                    }
 
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && !window.GITHUB_FIREBASE_CONFIG) {
-                        signInWithCustomToken(auth, __initial_auth_token).catch(() => {});
-                    } else {
-                        signInAnonymously(auth).catch(authErr => {
-                            console.warn('Anonymous Auth chưa bật hoặc không bắt buộc trên Firestore Rules mở:', authErr);
-                        });
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && !window.GITHUB_FIREBASE_CONFIG) {
+                            await Promise.race([signInWithCustomToken(auth, __initial_auth_token), new Promise(r => setTimeout(r, 1500))]);
+                        } else {
+                            await Promise.race([signInAnonymously(auth), new Promise(r => setTimeout(r, 1500))]);
+                        }
+                    } catch (authErr) {
+                        console.warn('Anonymous Auth chưa bật hoặc không bắt buộc trên Rules mở:', authErr);
                     }
 
                     updateFirebaseStatusBadge(true, firebaseConfig.projectId);
-                    // Chạy song song toàn bộ đồng bộ đám mây ở chế độ nền, tuyệt đối không làm chậm giao diện
                     Promise.allSettled([
                         window.syncCloudQuotaUsage(),
                         window.syncCloudAccounts(),
@@ -1112,177 +1118,193 @@ service cloud.firestore {
         };
 
         function isCloudReady() {
-            return Boolean(db);
+            return Boolean(db || rtdb);
         }
 
-        // Lưu & đồng bộ Cảnh báo an ninh (Đa IP, Khóa tài khoản, Lệch sĩ số lớp khi xuất file)
         window.saveCloudSecurityAlert = async function(alertObj) {
             if (!isCloudReady()) return;
-            try {
-                const docId = `alert_${alertObj.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'security_alerts', docId), alertObj);
-            } catch (e) {
-                console.warn('Save cloud security alert warning:', e);
-            }
+            const docId = `alert_${alertObj.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const tasks = [];
+            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'security_alerts', docId), alertObj));
+            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/security_alerts/${docId}`), alertObj));
+            await Promise.allSettled(tasks);
         };
 
         window.fetchAllCloudSecurityAlerts = async function() {
             if (!isCloudReady()) return null;
-            try {
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'security_alerts'));
-                const list = [];
-                snap.forEach(d => list.push(d.data()));
-                return list;
-            } catch (e) {
-                return null;
+            const map = new Map();
+            const tasks = [];
+            if (db) {
+                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'security_alerts')).then(snap => {
+                    snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); });
+                }));
             }
+            if (rtdb) {
+                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/security_alerts`)).then(snap => {
+                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v && v.id) map.set(v.id, v); });
+                }));
+            }
+            await Promise.allSettled(tasks);
+            return Array.from(map.values());
         };
 
-        // Lưu & đọc lịch sử các lượt bấm Đánh Giá / Xuất file của Giáo viên trên Cloud
         window.saveCloudTeacherEvalLog = async function(evalEntry) {
             if (!isCloudReady()) return;
-            try {
-                const docId = `eval_${evalEntry.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs', docId), evalEntry);
-            } catch (e) {
-                console.warn('Save cloud teacher eval log warning:', e);
-            }
+            const docId = `eval_${evalEntry.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const tasks = [];
+            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs', docId), evalEntry));
+            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs/${docId}`), evalEntry));
+            await Promise.allSettled(tasks);
         };
 
         window.fetchAllCloudTeacherEvalLogs = async function() {
             if (!isCloudReady()) return null;
-            try {
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs'));
-                const list = [];
-                snap.forEach(d => list.push(d.data()));
-                return list;
-            } catch (e) {
-                return null;
+            const map = new Map();
+            const tasks = [];
+            if (db) {
+                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'teacher_eval_logs')).then(snap => {
+                    snap.forEach(d => { const v = d.data(); if (v && v.id) map.set(v.id, v); });
+                }));
             }
+            if (rtdb) {
+                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/teacher_eval_logs`)).then(snap => {
+                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v && v.id) map.set(v.id, v); });
+                }));
+            }
+            await Promise.allSettled(tasks);
+            return Array.from(map.values());
         };
 
-        // Đọc TỔNG SỐ LƯỢT đã tạo của IP WiFi + Device Fingerprint (Không reset khi qua ngày mới đối với Khách chưa đăng nhập)
         window.fetchCloudQuota = async function(ipKey, fpKey, dateStr) {
             if (!isCloudReady()) return null;
             try {
+                const ids = [
+                    `perm_ip_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                    `perm_fp_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                    `quota_${dateStr}_${ipKey}_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                    `ip_${dateStr}_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+                ];
                 let maxUsed = 0;
-                // 1. Kiểm tra khóa vĩnh viễn theo IP (xuyên suốt các ngày)
-                const permIpId = `perm_ip_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const permIpSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', permIpId));
-        // Đọc TỔNG SỐ LƯỢT đã tạo của IP WiFi + Device Fingerprint (Song song hóa bằng Promise.all để tăng tốc)
-        window.fetchCloudQuota = async function(ipKey, fpKey, dateStr) {
-            if (!isCloudReady()) return null;
-            try {
-                const permIpId = `perm_ip_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const permFpId = `perm_fp_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const dailyDocId = `quota_${dateStr}_${ipKey}_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const ipDailyDocId = `ip_${dateStr}_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-
-                const snaps = await Promise.all([
-                    getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', permIpId)),
-                    getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', permFpId)),
-                    getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', dailyDocId)),
-                    getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', ipDailyDocId))
-                ]);
-
-                let maxUsed = 0;
-                snaps.forEach(s => {
-                    if (s && s.exists()) {
-                        maxUsed = Math.max(maxUsed, s.data().count || 0);
+                const tasks = [];
+                ids.forEach(id => {
+                    if (db) {
+                        tasks.push(getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id)).then(s => {
+                            if (s && s.exists()) maxUsed = Math.max(maxUsed, s.data().count || 0);
+                        }));
+                    }
+                    if (rtdb) {
+                        tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`)).then(s => {
+                            if (s && s.exists()) maxUsed = Math.max(maxUsed, (s.val() && s.val().count) || 0);
+                        }));
                     }
                 });
+                await Promise.allSettled(tasks);
                 return maxUsed;
             } catch (e) {
                 return null;
             }
         };
 
-        // Lưu tăng lượt sử dụng lên Cloud song song không chặn giao diện
         window.saveCloudQuota = async function(ipKey, fpKey, dateStr, newCount, ipRaw) {
             if (!isCloudReady()) return;
-            try {
-                const payload = {
-                    count: newCount,
-                    ip: ipRaw,
-                    fingerprint: fpKey,
-                    lastDate: dateStr,
-                    updatedAt: Date.now()
-                };
-                const permIpId = `perm_ip_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const permFpId = `perm_fp_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const docId = `quota_${dateStr}_${ipKey}_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                const ipDocId = `ip_${dateStr}_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-
-                await Promise.all([
-                    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', permIpId), payload),
-                    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', permFpId), payload),
-                    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', docId), payload),
-                    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', ipDocId), payload)
-                ]);
-            } catch (e) {
-                console.warn('Save cloud quota warning:', e);
-            }
+            const payload = {
+                count: newCount,
+                ip: ipRaw,
+                fingerprint: fpKey,
+                lastDate: dateStr,
+                updatedAt: Date.now()
+            };
+            const ids = [
+                `perm_ip_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                `perm_fp_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                `quota_${dateStr}_${ipKey}_${fpKey}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+                `ip_${dateStr}_${ipKey}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+            ];
+            const tasks = [];
+            ids.forEach(id => {
+                if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rate_limits', id), payload));
+                if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/rate_limits/${id}`), payload));
+            });
+            await Promise.allSettled(tasks);
         };
 
-        // Ghi nhận lịch sử IP đã đăng nhập / sử dụng để hiển thị trong Tab Tổng Hợp IP của Admin
         window.saveCloudIpLog = async function(logEntry) {
             if (!isCloudReady()) return;
-            try {
-                const docId = `iplog_${logEntry.ipKey}_${logEntry.fingerprint}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'ip_logs', docId), logEntry);
-            } catch (e) {
-                console.warn('Save cloud IP log warning:', e);
-            }
+            const docId = `iplog_${logEntry.ipKey}_${logEntry.fingerprint}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const tasks = [];
+            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'ip_logs', docId), logEntry));
+            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/ip_logs/${docId}`), logEntry));
+            await Promise.allSettled(tasks);
         };
 
         window.fetchAllCloudIpLogs = async function() {
             if (!isCloudReady()) return null;
-            try {
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'ip_logs'));
-                const list = [];
-                snap.forEach(d => list.push(d.data()));
-                return list;
-            } catch (e) {
-                return null;
+            const map = new Map();
+            const tasks = [];
+            if (db) {
+                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'ip_logs')).then(snap => {
+                    snap.forEach(d => { const v = d.data(); if (v) map.set(`${v.ipKey}_${v.fingerprint}`, v); });
+                }));
             }
+            if (rtdb) {
+                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/ip_logs`)).then(snap => {
+                    if (snap.exists()) Object.values(snap.val() || {}).forEach(v => { if (v) map.set(`${v.ipKey}_${v.fingerprint}`, v); });
+                }));
+            }
+            await Promise.allSettled(tasks);
+            return Array.from(map.values());
         };
 
-        // Đồng bộ danh sách tài khoản được cấp quyền (Admin & Giáo viên) trên Cloud
         window.saveCloudAccountItem = async function(accObj) {
-            if (!isCloudReady()) return;
-            try {
-                const docId = `acc_${accObj.username.toLowerCase()}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId), accObj);
-            } catch (e) {
-                console.warn('Save cloud account warning:', e);
-            }
+            if (!isCloudReady()) return false;
+            const cleanUser = String(accObj.username || '').trim().toLowerCase();
+            const docId = `acc_${cleanUser}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const tasks = [];
+            if (db) tasks.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId), accObj));
+            if (rtdb) tasks.push(set(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`), accObj));
+            const res = await Promise.allSettled(tasks);
+            return res.some(r => r.status === 'fulfilled');
         };
 
         window.deleteCloudAccountItem = async function(username) {
-            if (!isCloudReady()) return;
-            try {
-                const docId = `acc_${username.toLowerCase()}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId));
-            } catch (e) {
-                console.warn('Delete cloud account warning:', e);
-            }
+            if (!isCloudReady()) return false;
+            const cleanUser = String(username || '').trim().toLowerCase();
+            const docId = `acc_${cleanUser}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const tasks = [];
+            if (db) tasks.push(deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', docId)));
+            if (rtdb) tasks.push(remove(ref(rtdb, `artifacts/${appId}/public/data/accounts/${docId}`)));
+            const res = await Promise.allSettled(tasks);
+            return res.some(r => r.status === 'fulfilled');
         };
 
         window.fetchAllCloudAccounts = async function() {
             if (!isCloudReady()) return null;
-            try {
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts'));
-                const list = [];
-                snap.forEach(d => list.push(d.data()));
-                return list;
-            } catch (e) {
-                return null;
+            const map = new Map();
+            const tasks = [];
+            if (db) {
+                tasks.push(getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')).then(snap => {
+                    snap.forEach(d => {
+                        const acc = d.data();
+                        if (acc && acc.username) map.set(String(acc.username).trim().toLowerCase(), acc);
+                    });
+                }));
             }
+            if (rtdb) {
+                tasks.push(get(ref(rtdb, `artifacts/${appId}/public/data/accounts`)).then(snap => {
+                    if (snap.exists()) {
+                        Object.values(snap.val() || {}).forEach(acc => {
+                            if (acc && acc.username) map.set(String(acc.username).trim().toLowerCase(), acc);
+                        });
+                    }
+                }));
+            }
+            const res = await Promise.allSettled(tasks);
+            if (res.every(r => r.status === 'rejected')) return null;
+            return Array.from(map.values());
         };
 
         window.initFirebaseRateLimiter();
     </script>
-
     <!-- MAIN APPLICATION SCRIPT -->
     <script>
         /******************************************************************
